@@ -1,120 +1,159 @@
 from datetime import datetime
 import streamlit as st
 
-st.set_page_config(page_title="Kinetic eGFR (Chen) – ICU", page_icon="🧪", layout="centered")
-st.title("Kinetic eGFR (Chen) for Non-Steady State")
-st.caption("Educational tool. Correlate with clinical context and timed urine CrCl when feasible.")
+# ------------------- Page -------------------
+st.set_page_config(page_title="Kinetic eGFR (Chen)", page_icon="🧪", layout="centered")
+st.title("Kinetic eGFR (Chen) – Non-steady state")
+st.caption("Educational aid. Correlate with urine output and, when high-stakes, a timed urine creatinine clearance.")
+
+# ------------------- Helpers -------------------
+UMOL_PER_MGDL = 88.4  # µmol/L per mg/dL
+
+def to_mgdl(value, unit):
+    if value is None: return None
+    return value if unit == "mg/dL" else value / UMOL_PER_MGDL
 
 def cockcroft_gault(age, sex, weight_kg, scr_mgdl):
-    if any(x is None for x in (age, weight_kg, scr_mgdl)) or age <= 0 or weight_kg <= 0 or scr_mgdl <= 0:
-        return None
+    if any(x is None for x in (age, weight_kg, scr_mgdl)): return None
+    if age <= 0 or weight_kg <= 0 or scr_mgdl <= 0: return None
     crcl = ((140 - age) * weight_kg) / (72 * scr_mgdl)
     if sex == "Female":
         crcl *= 0.85
-    return crcl
+    return crcl  # mL/min (unindexed)
 
-def ke_gfr(scr_ss, crcl_ss, scr1, t1, scr2, t2, max_dscr_day=1.5, min_dt_hours=2.0):
-    if None in (scr_ss, crcl_ss, scr1, scr2, t1, t2) or crcl_ss <= 0 or scr_ss <= 0:
-        return None, None, None
-    dt_hours = (t2 - t1).total_seconds() / 3600.0
+def chen_ke_gfr(scr_ss, crcl_ss, scr1, t1, scr2, t2, max_dscr_day=1.5):
+    # All SCr in mg/dL, CrCl_ss in mL/min, times are datetimes
+    if None in (scr_ss, crcl_ss, scr1, t1, scr2, t2): return None, None, None, "missing"
+    if scr_ss <= 0 or crcl_ss <= 0 or scr1 <= 0 or scr2 <= 0: return None, None, None, "nonpositive"
+    dt_h = (t2 - t1).total_seconds() / 3600.0
+    if dt_h <= 0: return None, None, None, "nonpositive_dt"
     mean_scr = (scr1 + scr2) / 2.0
     d_scr = (scr2 - scr1)
-    if mean_scr <= 0 or max_dscr_day <= 0 or dt_hours <= 0:
-        return None, None, None
-    term = 1.0 - (24.0 * d_scr) / (dt_hours * max_dscr_day)
+    if mean_scr <= 0 or max_dscr_day <= 0: return None, None, None, "bad_params"
+    term = 1.0 - (24.0 * d_scr) / (dt_h * max_dscr_day)
     ke = (scr_ss * crcl_ss / mean_scr) * term
-    return ke, d_scr, dt_hours
+    return ke, d_scr, dt_h, None
 
-def dosing_band(gfr_mlmin):
-    if gfr_mlmin is None: return "unknown"
-    if gfr_mlmin >= 60: return "≥60 mL/min (standard dosing)"
-    if gfr_mlmin >= 30: return "30–59 mL/min (moderate reduction)"
-    if gfr_mlmin >= 15: return "15–29 mL/min (severe reduction)"
-    if gfr_mlmin >= 0:  return "<15 mL/min (kidney failure range)"
-    return "near-zero (treat as anuric)"
+def dosing_band(gfr):
+    if gfr is None: return "unknown"
+    if gfr >= 60: return "≥60 mL/min – standard dosing in most monographs"
+    if gfr >= 30: return "30–59 mL/min – moderate reduction"
+    if gfr >= 15: return "15–29 mL/min – severe reduction"
+    if gfr >= 0:  return "<15 mL/min – kidney failure range"
+    return "near-zero – treat as anuric"
 
-def interp_text(ke, crcl_ss, d_scr, dt_h):
-    if ke is None or crcl_ss is None or dt_h is None:
-        return "Insufficient input to interpret."
-    ke_display = max(ke, 0.0)
-    drop_pct = (100.0 * max(0.0, (1.0 - ke_display / crcl_ss))) if crcl_ss > 0 else None
-    band = dosing_band(ke_display)
-    parts = []
-    if d_scr is not None:
-        if d_scr > 0: parts.append(f"Serum creatinine is rising by {d_scr:.3f} mg/dL over {dt_h:.1f} h.")
-        elif d_scr < 0: parts.append(f"Serum creatinine is falling by {abs(d_scr):.3f} mg/dL over {dt_h:.1f} h.")
-        else: parts.append(f"Serum creatinine unchanged over {dt_h:.1f} h.")
-    parts.append(f"Kinetic eGFR ≈ {ke_display:.1f} mL/min (unindexed). Dosing band: {band}.")
-    if drop_pct is not None:
-        parts.append(f"Relative to baseline GFR {crcl_ss:.1f} mL/min, functional reduction ≈ {drop_pct:.0f}%.")
-    if dt_h < 6: parts.append("Caution: interval <6 h – kinetic estimate may be noisy; recheck later.")
-    if ke is not None and ke < 0: parts.append("Computed KeGFR is negative; treat as ~0 mL/min (near-anuric).")
-    if ke_display < 30: parts.append("High risk for drug accumulation; consider measured urine CrCl and review nephrotoxins.")
-    if d_scr is not None and d_scr > 0 and ke_display < 60: parts.append("Early functional decline detected; increase monitoring and optimize hemodynamics.")
-    parts.append("Do not rely on KeGFR alone in early shock; correlate with urine output.")
-    return " ".join(parts)
+def interpretation(ke, crcl_ss, d_scr, dt_h):
+    if ke is None: return "Cannot compute with the current inputs."
+    out = []
+    if d_scr > 0:
+        out.append(f"Serum creatinine is rising by {d_scr:.3f} mg/dL over {dt_h:.1f} h.")
+    elif d_scr < 0:
+        out.append(f"Serum creatinine is falling by {abs(d_scr):.3f} mg/dL over {dt_h:.1f} h.")
+    else:
+        out.append(f"Serum creatinine unchanged over {dt_h:.1f} h.")
+    ke_display = max(0.0, ke)
+    out.append(f"Kinetic eGFR ≈ {ke_display:.1f} mL/min (unindexed). Dosing band: {dosing_band(ke_display)}.")
+    if crcl_ss and crcl_ss > 0:
+        drop = max(0.0, 1.0 - ke_display / crcl_ss) * 100.0
+        out.append(f"Functional reduction vs baseline ≈ {drop:.0f}%.")
+    if dt_h < 6:
+        out.append("Interval <6 h – kinetic estimate can be noisy; repeat later.")
+    if ke < 0:
+        out.append("Computed value is negative; treat clinically as ~0 mL/min (near-anuric).")
+    if ke_display < 30:
+        out.append("High risk for drug accumulation – consider measured urine CrCl and review nephrotoxins.")
+    out.append("Caution in early shock/rapidly fluctuating states; correlate with urine output.")
+    return " ".join(out)
 
-st.subheader("Inputs")
-colA, colB = st.columns(2)
-with colA:
-    age = st.number_input("Age (years)", min_value=1, max_value=120, value=55)
-    sex = st.selectbox("Sex", ["Male", "Female"])
-    weight = st.number_input("Weight (kg) for Cockcroft–Gault", min_value=1.0, max_value=400.0, value=70.0)
-with colB:
-    scr_ss = st.number_input("Baseline steady-state SCr_ss (mg/dL)", min_value=0.1, max_value=15.0, value=1.0, step=0.1)
-    baseline_method = st.selectbox("Baseline GFR method", ["Enter CrCl_ss directly", "Compute via Cockcroft–Gault"])
+# ------------------- Inputs -------------------
+st.subheader("Baseline (steady state)")
+unit = st.radio("Creatinine units", ["mg/dL", "µmol/L"], horizontal=True)
+
+col0, col1 = st.columns(2)
+with col0:
+    scr_ss_in = st.number_input("Baseline SCr_ss", min_value=0.01, max_value=50.0, value=1.0, step=0.1)
+with col1:
+    baseline_mode = st.selectbox("Baseline GFR source", ["Enter CrCl_ss directly", "Compute via Cockcroft–Gault"])
 
 crcl_ss = None
-if baseline_method == "Enter CrCl_ss directly":
+if baseline_mode == "Enter CrCl_ss directly":
     crcl_ss = st.number_input("Baseline CrCl_ss (mL/min, unindexed)", min_value=1.0, max_value=300.0, value=90.0)
 else:
-    scr_for_cg = st.number_input("SCr for Cockcroft–Gault (mg/dL)", min_value=0.1, max_value=15.0, value=scr_ss)
+    ca, cb, cc, cd = st.columns(4)
+    with ca: age = st.number_input("Age (y)", min_value=1, max_value=120, value=55)
+    with cb: sex = st.selectbox("Sex", ["Male", "Female"])
+    with cc: weight = st.number_input("Weight (kg)", min_value=1.0, max_value=400.0, value=70.0)
+    with cd: scr_for_cg_in = st.number_input("SCr for CG", min_value=0.01, max_value=50.0, value=scr_ss_in, step=0.1)
+    scr_for_cg = to_mgdl(scr_for_cg_in, unit)
     crcl_ss = cockcroft_gault(age, sex, weight, scr_for_cg)
-    if crcl_ss: st.info(f"Calculated CrCl_ss by Cockcroft–Gault ≈ {crcl_ss:.1f} mL/min")
-    else:       st.warning("Cannot compute Cockcroft–Gault with current inputs.")
+    if crcl_ss:
+        st.info(f"Cockcroft–Gault baseline CrCl_ss ≈ {crcl_ss:.1f} mL/min")
+    else:
+        st.warning("Cannot compute Cockcroft–Gault with current inputs.")
 
 st.markdown("---")
-st.subheader("Creatinine pair for kinetic window")
-col1, col2 = st.columns(2)
-with col1:
-    scr1 = st.number_input("SCr1 (mg/dL)", min_value=0.1, max_value=20.0, value=1.0, step=0.1)
-    t1 = st.datetime_input("Time of SCr1", value=datetime.now().replace(hour=8, minute=0, second=0, microsecond=0))
+st.subheader("Kinetic window (two creatinine values)")
+col2, col3 = st.columns(2)
 with col2:
-    scr2 = st.number_input("SCr2 (mg/dL)", min_value=0.1, max_value=20.0, value=1.3, step=0.1)
-    t2 = st.datetime_input("Time of SCr2", value=datetime.now().replace(hour=20, minute=0, second=0, microsecond=0))
+    scr1_in = st.number_input("SCr1", min_value=0.01, max_value=50.0, value=1.0, step=0.1)
+    t1 = st.datetime_input("Time of SCr1", value=datetime.now().replace(minute=0, second=0, microsecond=0))
+with col3:
+    scr2_in = st.number_input("SCr2", min_value=0.01, max_value=50.0, value=1.3, step=0.1)
+    t2 = st.datetime_input("Time of SCr2", value=datetime.now().replace(minute=0, second=0, microsecond=0))
 
 st.markdown("---")
-st.subheader("Kinetic assumptions")
-colx, coly = st.columns(2)
-with colx:
-    max_dscr_day = st.number_input("Max ΔSCr/day if anuric (mg/dL/day)", min_value=0.5, max_value=5.0, value=1.5, step=0.1)
-with coly:
-    min_dt = st.number_input("Minimum interval warning (hours)", min_value=0.0, max_value=24.0, value=2.0, step=0.5)
+st.subheader("Assumptions")
+col4, col5 = st.columns(2)
+with col4:
+    max_choice = st.selectbox("Max ΔSCr/day method", ["Fixed 1.5 mg/dL/day", "Compute from weight (TBW)"])
+with col5:
+    # TBW: 0.6×wt male, 0.5×wt female → Max ΔSCr/day ≈ (SCr_ss × CrCl_ss) / TBW
+    if max_choice == "Compute from weight (TBW)":
+        wt_for_tbw = st.number_input("Weight for TBW (kg)", min_value=1.0, max_value=400.0, value=70.0)
+    else:
+        wt_for_tbw = None
+
+# Convert all creatinine inputs to mg/dL
+scr_ss = to_mgdl(scr_ss_in, unit)
+scr1 = to_mgdl(scr1_in, unit)
+scr2 = to_mgdl(scr2_in, unit)
+
+# Determine Max ΔSCr/day
+if max_choice == "Fixed 1.5 mg/dL/day":
+    max_dscr_day = 1.5
+else:
+    if not crcl_ss or not scr_ss or not wt_for_tbw:
+        max_dscr_day = 1.5  # fallback
+    else:
+        tbw = (0.5 if ('sex' in locals() and sex == "Female") else 0.6) * wt_for_tbw  # L
+        # Units: (mg/dL * mL/min) / L → mg/dL per min → ×1440 → mg/dL/day
+        max_dscr_day = (scr_ss * crcl_ss / tbw) * 1440.0 / 1000.0  # divide by 1000 to convert mL→L
+        # Keep within reasonable bounds
+        if max_dscr_day < 0.5 or max_dscr_day > 5.0:
+            max_dscr_day = min(max(max_dscr_day, 0.5), 5.0)
 
 if st.button("Compute KeGFR"):
-    if crcl_ss is None or crcl_ss <= 0:
-        st.error("Provide a valid baseline CrCl_ss (>0 mL/min).")
+    if not crcl_ss or crcl_ss <= 0:
+        st.error("Provide a valid baseline CrCl_ss (>0).")
     else:
-        ke, d_scr, dt_h = ke_gfr(scr_ss, crcl_ss, scr1, t1, scr2, t2, max_dscr_day=max_dscr_day, min_dt_hours=min_dt)
-        if ke is None:
-            st.error("Unable to compute. Check inputs and time interval.")
+        ke, d_scr, dt_h, err = chen_ke_gfr(scr_ss, crcl_ss, scr1, t1, scr2, t2, max_dscr_day=max_dscr_day)
+        if err:
+            if err == "nonpositive_dt":
+                st.error("Time of SCr2 must be after SCr1.")
+            else:
+                st.error("Unable to compute with current inputs. Check values and units.")
         else:
             ke_display = max(0.0, ke)
-            st.metric(label="Kinetic eGFR (Chen)", value=f"{ke_display:.1f} mL/min")
-            st.metric(label="Time interval", value=f"{dt_h:.1f} h")
-            st.metric(label="ΔSCr", value=f"{d_scr:+.3f} mg/dL")
-
+            st.metric("Kinetic eGFR (Chen)", f"{ke_display:.1f} mL/min")
+            st.metric("Interval", f"{dt_h:.1f} h")
+            st.metric("ΔSCr", f"{d_scr:+.3f} mg/dL")
             st.markdown("### Interpretation")
-            st.write(interp_text(ke, crcl_ss, d_scr, dt_h))
-
-            st.markdown("### Dosing band")
-            st.write(dosing_band(ke_display))
-
+            st.write(interpretation(ke, crcl_ss, d_scr, dt_h))
             with st.expander("Details and formula"):
-                st.markdown(
-                    "KeGFR = (SCr_ss × CrCl_ss / MeanSCr) × [ 1 − (24 × ΔSCr) / (Δt × MaxΔSCr/day) ]  \n"
-                    "Units: SCr mg/dL, CrCl_ss mL/min (unindexed), Δt hours, MaxΔSCr/day mg/dL/day."
+                st.write(
+                    "KeGFR = (SCr_ss × CrCl_ss / MeanSCr) × [ 1 − (24 × ΔSCr) / (Δt × MaxΔSCr/day) ]\n"
+                    "Units: creatinine mg/dL, CrCl_ss mL/min (unindexed), Δt hours, MaxΔSCr/day mg/dL/day."
                 )
-                st.markdown("Use a recent steady-state baseline. Recompute as new labs arrive. Consider timed urine CrCl when decisions are high-stakes.")
+
 st.markdown("---")
-st.caption("This tool does not provide medical advice.")
+st.caption("This tool does not provide medical advice. Validate with clinical context and measured urine creatinine clearance when important decisions depend on GFR.")
