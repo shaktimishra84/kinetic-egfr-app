@@ -213,7 +213,7 @@ st.markdown(
     "- For the kinetic window, enter SCr1 and SCr2 with correct dates and times (same lab, same method) covering the interval of interest.\n"
     "- Open Fluid-balance correction only if there is a large cumulative positive or negative fluid balance; enter fluid balance and TBW inputs there.\n"
     "- Click Compute KeGFR and interpret KeGFR as the current GFR estimate in non–steady state; always combine with urine output, clinical course and measured urine creatinine clearance for major drug or dialysis decisions.\n"
-    "- The model internally limits the maximum biologic rise in creatinine to about 1.5 mg/dL/day to prevent impossible values from noisy data."
+    "- The model internally limits the maximum biologic rise in creatinine to around 1.5 mg/dL/day to prevent impossible values from noisy data."
 )
 
 st.caption("This tool does not provide medical advice. Use alongside urine output, clinical course, and measured urine creatinine clearance when decisions depend on GFR.")
