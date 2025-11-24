@@ -99,7 +99,6 @@ with c1:
 
 if base_mode == "Enter CrCl_ss directly":
     crcl_ss = st.number_input("Baseline CrCl_ss (mL/min, unindexed)", min_value=1.0, max_value=300.0, value=90.0)
-    # capture sex/weight for potential TBW use later even if CG not used
     sex_for_tbw_default = "Male"
     weight_for_tbw_default = 70.0
 else:
@@ -128,28 +127,11 @@ with c3:
     scr2_in = st.number_input("SCr2", 0.01, 50.0, 1.3, step=0.1)
     t2 = dt_picker("SCr2", today, time(20, 0))
 
-st.markdown("---")
-st.subheader("Assumptions")
-c4, c5 = st.columns(2)
-with c4:
-    max_mode = st.selectbox("Max ΔSCr/day", ["Fixed 1.5 mg/dL/day", "Compute from weight (TBW)"])
-with c5:
-    wt_tbw = st.number_input("Weight for TBW (kg)", 1.0, 400.0, weight_for_tbw_default) if max_mode != "Fixed 1.5 mg/dL/day" else None
-
+# Convert to mg/dL and fix Max ΔSCr/day internally
 scr_ss = to_mgdl(scr_ss_in, unit)
 scr1 = to_mgdl(scr1_in, unit)
 scr2 = to_mgdl(scr2_in, unit)
-
-if max_mode == "Fixed 1.5 mg/dL/day":
-    max_dscr_day = 1.5
-else:
-    if not (crcl_ss and scr_ss and wt_tbw):
-        max_dscr_day = 1.5
-    else:
-        tbw = (0.5 if sex_for_tbw_default == "Female" else 0.6) * wt_tbw
-        max_dscr_day = (scr_ss * crcl_ss / tbw) * 1440.0 / 1000.0  # mg/dL/day
-        if max_dscr_day < 0.5 or max_dscr_day > 5.0:
-            max_dscr_day = min(max(max_dscr_day, 0.5), 5.0)
+max_dscr_day = 1.5  # mg/dL/day, fixed physiologic cap used inside the model
 
 st.markdown("---")
 with st.expander("Fluid-balance correction (optional)"):
@@ -175,13 +157,17 @@ if st.button("Compute KeGFR"):
         st.error("Provide a valid baseline CrCl_ss (>0).")
     else:
         # Uncorrected
-        ke_raw, (d_scr_raw, dt_h), err_raw = chen_ke_gfr(scr_ss, crcl_ss, scr1, t1, scr2, t2, max_dscr_day=max_dscr_day)
+        ke_raw, (d_scr_raw, dt_h), err_raw = chen_ke_gfr(
+            scr_ss, crcl_ss, scr1, t1, scr2, t2, max_dscr_day=max_dscr_day
+        )
 
         # Fluid-balance–corrected pair, if requested
         if use_fb and tbw_fb and tbw_fb > 0:
             scr1_corr = fb_correct(scr1, fb1, tbw_fb)
             scr2_corr = fb_correct(scr2, fb2, tbw_fb)
-            ke_fb, (d_scr_fb, _), err_fb = chen_ke_gfr(scr_ss, crcl_ss, scr1_corr, t1, scr2_corr, t2, max_dscr_day=max_dscr_day)
+            ke_fb, (d_scr_fb, _), err_fb = chen_ke_gfr(
+                scr_ss, crcl_ss, scr1_corr, t1, scr2_corr, t2, max_dscr_day=max_dscr_day
+            )
         else:
             ke_fb = None
             d_scr_fb = None
@@ -215,8 +201,19 @@ if st.button("Compute KeGFR"):
                 st.write(
                     "KeGFR = (SCr_ss × CrCl_ss / MeanSCr) × [1 − (24 × ΔSCr)/(Δt × MaxΔSCr/day)]\n"
                     "Fluid-balance correction applied to each SCr when enabled: SCr_corrected = SCr_measured × (1 + FB/TBW).\n"
-                    "TBW ≈ 0.6×weight (Male) or 0.5×weight (Female). FB may be negative."
+                    "TBW ≈ 0.6×weight (Male) or 0.5×weight (Female). FB may be negative.\n"
+                    "Internally, MaxΔSCr/day is fixed at about 1.5 mg/dL/day to avoid physiologically impossible estimates."
                 )
 
 st.markdown("---")
+st.markdown("### How to use this calculator")
+st.markdown(
+    "- Choose creatinine units as reported by your lab and enter Baseline SCr_ss from a stable, steady-state period.\n"
+    "- Provide Baseline CrCl_ss either as a measured 24-hour creatinine clearance, or compute it via Cockcroft–Gault using age, sex, weight and a stable SCr.\n"
+    "- For the kinetic window, enter SCr1 and SCr2 with correct dates and times (same lab, same method) covering the interval of interest.\n"
+    "- Open Fluid-balance correction only if there is a large cumulative positive or negative fluid balance; enter fluid balance and TBW inputs there.\n"
+    "- Click Compute KeGFR and interpret KeGFR as the current GFR estimate in non–steady state; always combine with urine output, clinical course and measured urine creatinine clearance for major drug or dialysis decisions.\n"
+    "- The model internally limits the maximum biologic rise in creatinine to about 1.5 mg/dL/day to prevent impossible values from noisy data."
+)
+
 st.caption("This tool does not provide medical advice. Use alongside urine output, clinical course, and measured urine creatinine clearance when decisions depend on GFR.")
